@@ -1,0 +1,653 @@
+import tkinter as tk
+
+from tkinter import messagebox
+import heapq
+import time
+from time import sleep
+from collections import deque
+from enum import Enum
+import threading
+
+
+class CellType(Enum):
+    EMPTY = "white"
+    WALL = "black"
+    START = "green"
+    END = "blue"
+    VISITED = "gray"
+    PATH = "gold"
+    CURRENT = "cyan"
+
+class Algorithm(Enum):
+    ASTAR = "A* Algorithm"
+    DIJKSTRA = "Dijkstra Algorithm"
+    BFS = "BFS Algorithm"
+    DFS = "DFS Algorithm"
+    GREEDY = "Greedy Algorithm"
+
+class Node:
+    def __init__(self, row: int, col: int, g: float = float('inf'), h: float= 0, parent=None):
+        self.row = row  #Zeile
+        self.col = col  #Spalte
+        self.g = g  #Zurügelegter Weg
+        self.h = h  #Geschätzer/Heurischtische Path bis zum Ziel
+        self.parent = parent  #Ursprunksknoten
+        self.f = g + h  #Kostenberechnung von Zurügeleten Weg und den geschäzten Weg bis zum Ziel
+
+    def __lt__(self, other):
+        return self.f < other.f
+
+    def __eq__(self, other):
+        return self.row == other.row and self.col == other.col
+
+    def __hash__(self):
+        return hash((self.row, self.col))
+
+class PathfindingApp:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("Pathfinding")
+        self.root.geometry("1920x1200")
+        self.root.configure(background="gray")
+
+        self.grid_size = 25 #Zu großes Grid size läßt das ganze Program lägen müsste glauch ich noch mal optimiert werden. Sollte update_all grid überprüfen
+        self.cell_size = 20
+
+        # Wände führt zu legs vieleicht user frundlicher
+
+        self.mode = "wall"
+        self.start_pos = (1,1)
+        self.end_pos = (23, 23)
+        self.walls = set()
+        self.selected_algorithms = [Algorithm.ASTAR, Algorithm.DIJKSTRA]
+
+        self.is_running = False
+        self.animation_speed = 0.05
+
+        self.setup_ui()
+        self.create_grids()
+        self.update_all_grids()
+
+
+
+    def setup_ui(self):
+        #Title
+        title_frame = tk.Frame(self.root, background="gray")
+        title_frame.pack(pady=10)
+
+        title = tk.Label(title_frame, text ="Vergleich von Pathfinding Algorithmen", font=('Arial', 20,'bold'), foreground='white', background='gray')
+        title.pack()
+
+       #Bedinungs Oberfläche
+        control_frame = tk.Frame(self.root, background="darkgray")
+        control_frame.pack(fill="x", padx=10, pady=5)
+
+
+        #Auswahl der Moduse
+        mode_frame = tk.Frame(control_frame, background="gray")
+        mode_frame.pack(side="left", padx=10, pady=5)
+
+        tk.Label(mode_frame, text="Mode:", font=('Arial', 12, 'bold'), foreground='white', background='gray').pack()
+
+        self.mode_var = tk.StringVar(value="wall")
+        modes = [("Wall", "wall"), ("Start","start"), ("End", "end")]
+
+        for text, value in modes:
+            rb = tk.Radiobutton(mode_frame, text=text, variable=self.mode_var, value=value, font=("Arial", 10), background= 'gray', foreground='white', selectcolor="green", command=lambda v=value: setattr(self, "mode", v))
+            rb.pack(side="left", padx=10)
+
+        #Auswahl des algorithmus
+        algo_frame = tk.Frame(control_frame, background="gray")
+        algo_frame.pack(side="left", padx=20, pady=5)
+
+        tk.Label(algo_frame, text="Algorithmus:", font=("Arial", 10, "bold"), foreground='white', background='gray').pack()
+
+        self.algo_vars = {}
+        algo_checkframe = tk.Frame(algo_frame, background="gray")
+        algo_checkframe.pack()
+
+        for algo in Algorithm:
+            var = tk.BooleanVar(value=algo in self.selected_algorithms)
+            self.algo_vars[algo] = var
+            cb = tk.Checkbutton(algo_checkframe, text=algo.value, variable=var,font=("Arial", 10), background='gray', foreground='white', selectcolor="green", command=self.update_selected_algorithms)
+            cb.pack(anchor="w")
+
+        #Buttons :/
+        button_frame = tk.Frame(control_frame, background="gray")
+        button_frame.pack(side="right", padx=10, pady=5)
+
+        self.run_button = tk.Button(button_frame, text="Starten", command=self.run_algorithm, font=("Arial", 10), background="gray", foreground='white',padx=20, pady=5 )
+        self.run_button.pack(side="left", padx=5)
+
+        clear_button = tk.Button(button_frame, text="Zurücksetzen", command=self.clear_grid, font=("Arial", 10, "bold"), background="gray", foreground="white", padx=20, pady=5 )
+        clear_button.pack(side="left", padx=5)
+
+        #Geschwindigkeit
+        speed_frame = tk.Frame(control_frame, background="gray")
+        speed_frame.pack(side="right", padx=10, pady=5)
+
+        tk.Label(speed_frame, text="Speed:", font=("Arial", 10, "bold"),foreground='white', background='gray').pack()
+
+        self.speed_scale = tk.Scale(speed_frame,from_ =1, to=10, orient="horizontal", background="gray", foreground="white", troughcolor="green", command=self.update_speed)
+        self.speed_scale.set(5)
+        self.speed_scale.pack()
+
+        #Legende
+        self.create_legend()
+
+        #Scroll Outerframe
+        self.setup_scrollable_content()
+
+
+    def setup_scrollable_content(self):
+
+
+        main_container = tk.Frame(self.root, background="grey")
+        main_container.pack(fill="both", expand=True, padx=10, pady=5)
+
+        self.canvas = tk.Canvas(main_container, background="grey", highlightthickness=0)
+
+        v_scrollbar = tk.Scrollbar(main_container, orient="vertical", command=self.canvas.yview)
+        v_scrollbar.pack(side="right", fill="y")
+
+        h_scrollbar = tk.Scrollbar(main_container, orient="horizontal", command=self.canvas.xview)
+        h_scrollbar.pack(side="bottom", fill="x")
+
+        self.canvas.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
+        self.canvas.pack(side="left", fill="both",expand=True)
+
+        self.content_frame = tk.Frame(self.canvas, background="grey")
+        self.canvas_window = self.canvas.create_window((0, 0), window=self.content_frame,anchor="nw")
+
+        self.content_frame.bind("<Configure>", self.on_frame_configure)
+        self.canvas.bind("<Configure>", self.on_canvas_configure)
+
+        self.canvas.bind("<MouseWheel>", self.on_mousewheel)
+        self.canvas.bind("<Button-4>", self.on_mousewheel)
+        self.canvas.bind("<Button-5>", self.on_mousewheel)
+
+        self.canvas.focus_set()
+
+    def on_frame_configure(self, event):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def on_canvas_configure(self, event):
+
+        canvas_width = event.width
+        frame_width = self.content_frame.winfo_reqwidth()
+
+        if frame_width < canvas_width:
+            self.canvas.itemconfig(self.canvas_window, width=canvas_width)
+
+    def on_mousewheel(self, event):
+        if event.num == 4 or event.delta > 0:
+            self.canvas.yview_scroll(-1, "units")
+        elif event.num == 5 or event.delta < 0:
+            self.canvas.yview_scroll(1, "units")
+
+
+
+    def create_legend(self):
+        legend_frame = tk.Frame(self.root, background="gray")
+        legend_frame.pack(fill="x", padx=10, pady=5)
+
+        tk.Label(legend_frame, text="Legende:",font=("Arial", 12, "bold"), foreground='white', background='gray').pack(side="left", padx=10)
+        legend_items = [
+            ("Empty", CellType.EMPTY.value),
+            ("Wall", CellType.WALL.value),
+            ("Start", CellType.START.value),
+            ("End", CellType.END.value),
+            ("Visited", CellType.VISITED.value),
+            ("Path", CellType.PATH.value),
+            ("Current", CellType.CURRENT.value)
+        ]
+
+        for text, color in legend_items:
+            item_frame = tk.Frame(legend_frame, background="gray")
+            item_frame.pack(side="left", padx=10)
+
+            color_box = tk.Label(item_frame, background=color, width=3, height=1, relief="solid", bd=1)
+            color_box.pack(side="left")
+
+            tk.Label(item_frame, text=text, font=("Arial", 10), foreground='white', background='gray').pack(side="left", pady=2)
+
+    def update_selected_algorithms(self):
+        self.selected_algorithms = [algo for algo, var in self.algo_vars.items() if var.get()]
+        self.create_grids()
+        self.update_all_grids()
+
+    def update_speed(self, value):
+        self.animation_speed = 0.1 / int(value)
+
+    def create_grids(self):
+
+        for widget in self.content_frame.winfo_children():
+            widget.destroy()
+
+        if not self.selected_algorithms:
+            tk.Label(self.content_frame, text="Wähle ein Algorithmus aus", font=("Arial", 15), foreground='white', background='gray').pack(expand=True)
+            return
+
+        self.grids = {}
+        self.stats_labels = {}
+
+        #Berechnen des Grits Layouts
+
+        num_algorithms = len(self.selected_algorithms)
+        cols = min(3, num_algorithms)
+        rows = (num_algorithms + cols - 1) // cols
+        for i, algorithm in enumerate(self.selected_algorithms):
+            row = i // cols
+            col = i % cols
+
+            #algorithmus Frame
+            algo_frame = tk.Frame(self.content_frame, background="gray")
+            algo_frame.grid(row=row, column=col, padx=10, pady=10, sticky="nsew")
+
+            #Name des algorithmus
+
+            title_label = tk.Label(algo_frame, text=algorithm.value, font =("Arial", 15, "bold"), foreground='white', background='gray')
+            title_label.pack(pady=5)
+
+            #Grid Canvas
+            canvas_size = self.grid_size * self.cell_size
+            canvas = tk.Canvas(algo_frame, width=canvas_size, height=canvas_size, background="white")
+            canvas.pack(pady=5)
+
+            #Click Event
+
+            canvas.bind("<Button-1>", lambda e, alg=algorithm: self.on_cell_click(e, alg))
+            canvas.bind("<B1-Motion>", lambda e, alg=algorithm: self.on_cell_drag(e, alg))
+
+            self.grids[algorithm] = canvas
+
+            #Statistiken Fenster
+
+            stats_frame = tk.Frame(algo_frame, background="gray")
+            stats_frame.pack(fill="x", padx=5, pady=5)
+
+            stats = {}
+            stat_names = ["Besuchte Knoten", "Pfadlänge", "Ausführungszeit"]
+            for stat_name in stat_names:
+                stat_label = tk.Label(stats_frame, text=f"{stat_name}: 0", font=("Arial", 10), background="gray", foreground='white')
+                stat_label.pack()
+                key = stat_name.lower().replace(' ', '_').replace("ä", "ae").replace("ü","ue")
+                stats[key] = stat_label
+
+            self.stats_labels[algorithm] = stats
+
+
+        #Wert Bestimung für Grid
+        for i in range(rows):
+            self.content_frame.grid_rowconfigure(i, weight=1)
+        for i in range(cols):
+            self.content_frame.grid_columnconfigure(i, weight=1)
+
+    def on_cell_click(self, event, algorithm):
+        self.handle_cell_interaction(event, algorithm)
+
+    def on_cell_drag(self, event, algorithm):
+        self.handle_cell_interaction(event, algorithm)
+
+
+    def handle_cell_interaction(self, event, algorithm):
+        if self.is_running:
+            return
+
+        canvas = self.grids[algorithm]
+        x, y = canvas.canvasx(event.x), canvas.canvasy(event.y)
+        col = int(x // self.cell_size)
+        row = int(y // self.cell_size)
+
+        if 0 <= row < self.grid_size and 0 <= col < self.grid_size:
+            if self.mode == "wall":
+                if (row, col) in self.walls:
+                    self.walls.remove((row, col))
+                else:
+
+                    if (row, col) != self.start_pos and (row, col) != self.end_pos:
+                        self.walls.add((row, col))
+            elif self.mode == "start":
+                if (row, col) not in self.walls:
+                    self.start_pos = (row, col)
+                    if self.end_pos == (row, col):
+                        self.end_pos = (10, 10)
+            elif self.mode == "end":
+                if (row, col) not in self.walls:
+                    self.end_pos = (row, col)
+                    if self.start_pos == (row, col):
+                        self.start_pos = (1, 1)
+
+            self.update_all_grids()
+
+    def update_all_grids(self):
+        for algo in self.selected_algorithms:
+            self.update_grid(algo)
+
+    def update_grid(self, algorithm, visited=None, path=None, current=None):
+        if algorithm not in self.grids:
+            return
+
+        canvas = self.grids[algorithm]
+        canvas.delete("all")
+
+
+        for row in range(self.grid_size):
+            for col in range(self.grid_size):
+                x1, y1 = col * self.cell_size, row * self.cell_size
+                x2, y2 = x1 + self.cell_size, y1 + self.cell_size
+
+                #SCheißFarben bestimmen als ob überhaubt jemand das juckt
+
+                color = CellType.EMPTY.value
+                if (row, col) in self.walls:
+                    color = CellType.WALL.value
+                elif (row, col) == self.start_pos:
+                    color = CellType.START.value
+                elif (row, col) == self.end_pos:
+                    color = CellType.END.value
+                elif current and (row, col) == current:
+                    color = CellType.CURRENT.value
+                elif path and (row, col) in path:
+                    color = CellType.PATH.value
+                elif visited and (row, col) in visited:
+                    color = CellType.VISITED.value
+
+                canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline="black")
+
+    def clear_grid(self):
+        if self.is_running:
+            return
+        self.walls.clear()
+        self.update_all_grids()
+
+        #Zurücksetzen der Statistik
+
+
+        for algo in self.selected_algorithms:
+            if algo in self.stats_labels:
+                stats = self.stats_labels[algo]
+                for key, stat_label in stats.items():
+                    if key == "besuchte_knoten":
+                        stat_label.config(text="Besuchte Knoten: 0")
+                    elif key == "pfadlaenge":
+                        stat_label.config(text="Pfadlänge: 0")
+                    elif key == "ausfuehrungszeit":
+                        stat_label.config(text="Ausführungszeit: 0")
+
+    def run_algorithm(self):
+        if self.is_running:
+            return
+        if not self.start_pos or not self.end_pos:
+            messagebox.showerror("Error", "Start or End position must be set")
+            return
+        if not self.selected_algorithms:
+            messagebox.showerror("Error", "Selected algorithms must not be empty")
+            return
+
+        self.is_running = True
+        self.run_button.config(state="disabled", text="Running")
+
+        #algorithmen in unterschieldichen Threasds laufen lassen
+        for algo in self.selected_algorithms:
+            thread = threading.Thread(target=self.execute_single_algorithm, args=(algo,))
+            thread.daemon = True
+            thread.start()
+
+    def execute_single_algorithm(self, algo):
+        algo_methods = {
+            Algorithm.ASTAR: self.run_astar,
+            Algorithm.DIJKSTRA: self.run_dijkstra,
+            Algorithm.BFS: self.run_bfs,
+            Algorithm.DFS: self.run_dfs,
+            Algorithm.GREEDY: self.run_greedy
+        }
+
+        if algo in algo_methods:
+            start_time = time.time()
+            visited, path = algo_methods[algo](algo)
+            end_time = time.time()
+
+            exec_time = (end_time - start_time) * 1000
+
+            #Updating der Startistic
+            self.root.after(0, self.update_stats, algo, visited, path, exec_time)
+
+    def finish_execution(self):
+        self.is_running = False
+        self.run_button.config(state="normal", text="Starten")
+
+    def update_stats(self, algo, visited, path, exec_time):
+        if algo in self.stats_labels:
+            stats = self.stats_labels[algo]
+            stats["besuchte_knoten"].config(text=f"Besuchte Knoten: {len(visited) if visited else 0}")
+            stats["pfadlaenge"].config(text=f"Pfadlänge: {len(path) if path else 0}")
+            stats["ausfuehrungszeit"].config(text=f"Ausführungszeit: {exec_time:.2f} ms")
+
+
+        #Check ob all Algo fertig sind
+        if all(not thread.is_alive() for thread in threading.enumerate() if thread != threading.main_thread()):
+            self.root.after(100, self.finish_execution)
+
+    def run_astar(self, algo):
+        start_node = Node(self.start_pos[0], self.start_pos[1], 0, self.heuristic(self.start_pos, self.end_pos))
+        open_set = [start_node]
+        closed_set = set()
+        visited_order = []
+
+        while open_set:
+            current = heapq.heappop(open_set)
+            current_pos = (current.row, current.col)
+
+            if current_pos in closed_set:
+                continue
+
+            closed_set.add(current_pos)
+            visited_order.append(current_pos)
+
+            #Updaten der Visuals
+
+            self.root.after(0, self.update_grid, algo, visited_order, None, current_pos)
+            time.sleep(self.animation_speed)
+
+            if current_pos == self.end_pos:
+                path = self.reconstruct_path(current)
+                self.root.after(0, self.update_grid, algo, visited_order, path, None)
+                return visited_order, path
+
+            for neighbor_pos in self.get_neighbors(current_pos):
+                if neighbor_pos in closed_set:
+                    continue
+
+
+                g_score = current.g + 1
+                h_score = self.heuristic(neighbor_pos, self.end_pos)
+                neighbor = Node(neighbor_pos[0], neighbor_pos[1], g_score, h_score, current)
+
+                existing = next((n for n in open_set if (n.row, n.col) == neighbor_pos), None)
+                if existing is None or g_score < existing.g:
+                    if existing:
+                        open_set.remove(existing)
+                        heapq.heapify(open_set)
+                    heapq.heappush(open_set, neighbor)
+
+        return visited_order, None
+
+    def run_dijkstra(self, algo):
+        distances = {pos: float("inf") for pos in self.get_all_positions()}
+        distances[self.start_pos] = 0
+        visited = set()
+        visited_order = []
+        previous = {}
+
+        unvisited = [(0, self.start_pos)]
+
+        while unvisited:
+            current_dist, current_pos = heapq.heappop(unvisited)
+            if current_pos in visited:
+                continue
+
+
+            visited.add(current_pos)
+            visited_order.append(current_pos)
+
+            #Visual Updates
+            self.root.after(0, self.update_grid, algo, visited_order, None, current_pos)
+            time.sleep(self.animation_speed)
+
+            if current_pos == self.end_pos:
+                path = self.reconstruct_dijkstra_path(previous)
+                self.root.after(0, self.update_grid, algo, visited_order, path, None)
+                return visited_order, path
+
+            for neighbor_pos in self.get_neighbors(current_pos):
+                if neighbor_pos in visited:
+                    continue
+
+                new_distance = distances[current_pos] + 1
+                if new_distance < distances[neighbor_pos]:
+                    distances[neighbor_pos] = new_distance
+                    previous[neighbor_pos] = current_pos
+                    heapq.heappush(unvisited, (new_distance, neighbor_pos))
+
+        self.root.after(0, self.update_grid, algo, visited_order, None, None)
+        return visited_order, None
+
+    def run_bfs(self, algo):
+        queue = deque([self.start_pos])
+        visited = set([self.start_pos])
+        visited_order = []
+        previous = {}
+
+        while queue:
+            current_pos = queue.popleft()
+            visited_order.append(current_pos)
+
+            #Visual Update
+            self.root.after(0, self.update_grid, algo, visited_order, None, current_pos)
+            time.sleep(self.animation_speed)
+
+            if current_pos == self.end_pos:
+                path = self.reconstruct_dijkstra_path(previous)
+                self.root.after(0, self.update_grid, algo, visited_order, path, None)
+                return visited_order, path
+
+            for neighbor_pos in self.get_neighbors(current_pos):
+                if neighbor_pos not in visited:
+                    visited.add(neighbor_pos)
+                    previous[neighbor_pos] = current_pos
+                    queue.append(neighbor_pos)
+
+        self.root.after(0, self.update_grid, algo, visited_order, None, None)
+        return visited_order, None
+
+    def run_dfs(self, algo):
+        stack = [self.start_pos]
+        visited = set()
+        visited_order = []
+        previous = {}
+
+        while stack:
+            current_pos = stack.pop()
+            if current_pos in visited:
+                continue
+
+            visited.add(current_pos)
+            visited_order.append(current_pos)
+
+            self.root.after(0, self.update_grid, algo, visited_order, None, current_pos)
+            time.sleep(self.animation_speed)
+
+            if current_pos == self.end_pos:
+                path = self.reconstruct_dijkstra_path(previous)
+                self.root.after(0, self.update_grid, algo, visited_order, path, None)
+                return visited_order, path
+
+            neighbors = list(self.get_neighbors(current_pos))
+            for neighbor_pos in reversed(neighbors):
+                if neighbor_pos not in visited:
+                    previous[neighbor_pos] = current_pos
+                    stack.append(neighbor_pos)
+
+        self.root.after(0, self.update_grid, algo, visited_order, None, None)
+        return visited_order, None
+
+    def run_greedy(self, algo):
+        open_set = [(self.heuristic(self.start_pos, self.end_pos), self.start_pos)]
+        visited = set()
+        visited_order = []
+        previous = {}
+
+        while open_set:
+            _, current_pos = heapq.heappop(open_set)
+
+            if current_pos in visited:
+                continue
+
+            visited.add(current_pos)
+            visited_order.append(current_pos)
+
+            self.root.after(0, self.update_grid, algo, visited_order, None, current_pos)
+            time.sleep(self.animation_speed)
+
+            if current_pos == self.end_pos:
+                path = self.reconstruct_dijkstra_path(previous)
+                self.root.after(0, self.update_grid, algo, visited_order, path, None)
+                return visited_order, path
+
+            for neighbor_pos in self.get_neighbors(current_pos):
+                if neighbor_pos not in visited:
+                    previous[neighbor_pos] = current_pos
+                    h_score = self.heuristic(neighbor_pos, self.end_pos)
+                    heapq.heappush(open_set, (h_score, neighbor_pos))
+
+        self.root.after(0, self.update_grid, algo, visited_order, None, None)
+        return visited_order, None
+
+    def heuristic(self, pos1, pos2):
+        return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
+
+    def get_neighbors(self, pos):
+        row, col = pos
+        neighbors = []
+        directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+        for dr, dc in directions:
+            new_row, new_col = row + dr, col + dc
+            if (0 <= new_row < self.grid_size and 0 <= new_col < self.grid_size and (new_row, new_col) not in self.walls):
+             neighbors.append((new_row, new_col))
+
+        return neighbors
+
+    def get_all_positions(self):
+        positions = []
+        for row in range(self.grid_size):
+            for col in range(self.grid_size):
+                positions.append((row, col))
+        return positions
+
+    def reconstruct_path(self, node):
+        path = []
+        current = node
+        while current:
+            path.append((current.row, current.col))
+            current = current.parent
+        return path[::-1]
+
+    def reconstruct_dijkstra_path(self, previous):
+        if self.end_pos not in previous and self.end_pos != self.start_pos:
+            return None
+
+        path = []
+        current = self.end_pos
+        while current is not None:
+            path.append(current)
+            current = previous.get(current)
+        return path[::-1]
+
+    def run(self):
+        self.root.mainloop()
+
+if __name__ == '__main__':
+    app = PathfindingApp()
+    app.run()
